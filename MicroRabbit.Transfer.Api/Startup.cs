@@ -16,24 +16,29 @@ using zipkin4net;
 using zipkin4net.Tracers.Zipkin;
 using zipkin4net.Transport.Http;
 using zipkin4net.Middleware;
+using MicroRabbit.Infra.IoC.Extensions.Jaeger;
 
 namespace MicroRabbit.Transfer.Api
 {
     public class Startup
     {
-        public Startup(IConfiguration configuration)
+        public Startup(IConfiguration configuration,
+            ILoggerFactory loggerFactory)
         {
             Configuration = configuration;
+            LoggerFactory = loggerFactory;
         }
 
         public IConfiguration Configuration { get; }
+        public ILoggerFactory LoggerFactory { get; set; }
 
         // This method gets called by the runtime. Use this method to add services to the container.
         public void ConfigureServices(IServiceCollection services)
         {
             services.AddDbContext<TransferDbContext>(options =>
             {
-                options.UseSqlServer(Configuration.GetConnectionString("TransferDbConnection"));
+                //options.UseSqlServer(Configuration.GetConnectionString("TransferDbConnection"));
+                options.UseInMemoryDatabase("InMemory");
             });
 
             services.AddMvc().SetCompatibilityVersion(CompatibilityVersion.Version_2_2);
@@ -41,6 +46,13 @@ namespace MicroRabbit.Transfer.Api
             services.AddSwaggerGen(c =>
             {
                 c.SwaggerDoc("v1", new Info { Title = "Transfer Microservice", Version = "v1" });
+            });
+
+            services.AddJaegerTracing(options => {
+                options.JaegerAgentHost = "192.168.99.100";
+                options.JaegerAgentPort = 6831;
+                options.ServiceName = "Transfer";
+                options.LoggerFactory = LoggerFactory;
             });
 
             services.AddMediatR(typeof(Startup));

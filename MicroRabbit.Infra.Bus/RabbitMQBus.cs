@@ -1,13 +1,21 @@
-﻿using MediatR;
+﻿using Jaeger;
+using MediatR;
 using MicroRabbit.Domain.Core.Bus;
 using MicroRabbit.Domain.Core.Commands;
 using MicroRabbit.Domain.Core.Events;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Newtonsoft.Json;
+using OpenTracing;
+using OpenTracing.Mock;
+using OpenTracing.Propagation;
+using OpenTracing.Tag;
+using OpenTracing.Util;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -36,19 +44,50 @@ namespace MicroRabbit.Infra.Bus
 
         public void Publish<T>(T @event) where T : Event
         {
-            var factory = new ConnectionFactory() { HostName = "localhost" };
-            using (var connection = factory.CreateConnection())
-            using (var channel = connection.CreateModel())
+            var tracer = GlobalTracer.Instance;
+
+            using (IScope scope = GlobalTracer.Instance.BuildSpan("send")
+                    .WithTag(Tags.SpanKind.Key, Tags.SpanKindClient)
+                    .WithTag(Tags.Component.Key, "example-client")
+                    .StartActive(finishSpanOnDispose: true))
             {
-                var eventName = @event.GetType().Name;
+                var headers = new Dictionary<string, string>();
+                var adapter = new TextMapInjectAdapter(headers);
 
-                channel.QueueDeclare(eventName, false, false, false, null);
+                GlobalTracer.Instance.Inject(scope.Span.Context, BuiltinFormats.TextMap, adapter);
 
-                var message = JsonConvert.SerializeObject(@event);
-                var body = Encoding.UTF8.GetBytes(message);
+                tracer.ActiveSpan?.Log(new Dictionary<string, object> {
+                    { "event", nameof(@event) },
+                    { "type", @event.GetType().ToString()},
+                    { "customer_name", "teste" },
+                    { "item_number", "teste" },
+                    { "quantity", "teste" }
+                });
 
-                channel.BasicPublish("", eventName, null, body);
+                var factory = new ConnectionFactory() { HostName = "192.168.99.100" };
+                using (var connection = factory.CreateConnection())
+                using (var channel = connection.CreateModel())
+                {
+                    var properties = channel.CreateBasicProperties();
+
+                    properties.Headers = new Dictionary<string, object>();
+
+                    foreach (var item in headers)
+                    {
+                        properties.Headers.Add(new KeyValuePair<string, object>(item.Key, item.Value));
+                    }
+
+                    var eventName = @event.GetType().Name;
+
+                    channel.QueueDeclare(eventName, false, false, false, null);
+
+                    var message = JsonConvert.SerializeObject(@event);
+                    var body = Encoding.UTF8.GetBytes(message);
+
+                    channel.BasicPublish("", eventName, properties, body);
+                }
             }
+
         }
 
         public void Subscribe<T, TH>()
@@ -80,7 +119,7 @@ namespace MicroRabbit.Infra.Bus
 
         private void StartBasicConsume<T>() where T : Event
         {
-            var factory = new ConnectionFactory() { HostName = "localhost", DispatchConsumersAsync = true };
+            var factory = new ConnectionFactory() { HostName = "192.168.99.100", DispatchConsumersAsync = true };
             var connection = factory.CreateConnection();
             var channel = connection.CreateModel();
 
@@ -99,9 +138,49 @@ namespace MicroRabbit.Infra.Bus
             var eventName = e.RoutingKey;
             var message = Encoding.UTF8.GetString(e.Body);
 
+            var headers = new Dictionary<string, string>();
+
             try
             {
-                await ProcessEvent(eventName, message).ConfigureAwait(false);
+                foreach(var header in e.BasicProperties.Headers)
+                {
+                    headers.Add(header.Key, Encoding.UTF8.GetString((byte[])header.Value));
+                }
+
+                GlobalTracer.Instance?.ActiveSpan?.Log(new Dictionary<string, object> {
+                    { "event", message },
+                    { "type", message},
+                    { "customer_name", "teste" },
+                    { "item_number", "teste" },
+                    { "quantity", "teste" }
+                });
+
+                ISpanBuilder spanBuilder;
+
+                IPropagator propagator = new BinaryPropagator();
+
+                try
+                {
+                    var parentSpanCtx = GlobalTracer.Instance.Extract(BuiltinFormats.TextMap, new TextMapExtractAdapter(headers));
+
+                    spanBuilder = GlobalTracer.Instance.BuildSpan("a");
+                    if (parentSpanCtx != null)
+                    {
+                        spanBuilder = spanBuilder.AsChildOf(parentSpanCtx);
+                    }
+                }
+                catch (Exception)
+                {
+                    spanBuilder = GlobalTracer.Instance.BuildSpan(("a"));
+                }
+
+                spanBuilder
+                    .WithTag("source-host-process-id", Process.GetCurrentProcess().Id);
+
+                using (var scope = spanBuilder.StartActive(true))
+                {
+                    await ProcessEvent(eventName, message).ConfigureAwait(false);
+                }
             }
             catch (Exception ex)
             {

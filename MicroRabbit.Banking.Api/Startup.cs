@@ -1,6 +1,7 @@
 ﻿using MediatR;
 using MicroRabbit.Banking.Data.Context;
 using MicroRabbit.Infra.IoC;
+using MicroRabbit.Infra.IoC.Extensions.Jaeger;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
@@ -18,12 +19,14 @@ namespace MicroRabbit.Banking.Api
 {
     public class Startup
     {
-        public Startup(IConfiguration configuration)
+        public Startup(IConfiguration configuration, ILoggerFactory loggerFactory)
         {
             Configuration = configuration;
+            _loggerFactory = loggerFactory;
         }
 
         public IConfiguration Configuration { get; }
+        public ILoggerFactory _loggerFactory;
 
         public void ConfigureServices(IServiceCollection services)
         {
@@ -39,9 +42,18 @@ namespace MicroRabbit.Banking.Api
                 c.SwaggerDoc("v1", new Info { Title = "Banking Microservice", Version = "v1" });
             });
 
+            //services.AddOpenTracing();
+
             services.AddMediatR(typeof(Startup));
 
             RegisterServices(services);
+
+            services.AddJaegerTracing(options => {
+                options.JaegerAgentHost = "192.168.99.100";
+                options.JaegerAgentPort = 6831;
+                options.ServiceName = "Banking";
+                options.LoggerFactory = _loggerFactory;
+            });
         }
 
         private void RegisterServices(IServiceCollection services)
@@ -69,20 +81,20 @@ namespace MicroRabbit.Banking.Api
             });
 
 
-            var lifetime = app.ApplicationServices.GetService<IApplicationLifetime>();
+            //var lifetime = app.ApplicationServices.GetService<IApplicationLifetime>();
 
-            lifetime.ApplicationStarted.Register(() => {
-                TraceManager.SamplingRate = 1.0f;
-                var logger = new TracingLogger(loggerFactory, "zipkin4net");
-                var httpSender = new HttpZipkinSender("http://192.168.99.100:9411/", "application/json");
-                var tracer = new ZipkinTracer(httpSender, new JSONSpanSerializer());
-                TraceManager.RegisterTracer(tracer);
-                TraceManager.Start(logger);
-            });
+            //lifetime.ApplicationStarted.Register(() => {
+            //    TraceManager.SamplingRate = 1.0f;
+            //    var logger = new TracingLogger(loggerFactory, "zipkin4net");
+            //    var httpSender = new HttpZipkinSender("http://192.168.99.100:9411/", "application/json");
+            //    var tracer = new ZipkinTracer(httpSender, new JSONSpanSerializer());
+            //    TraceManager.RegisterTracer(tracer);
+            //    TraceManager.Start(logger);
+            //});
 
-            lifetime.ApplicationStopped.Register(() => TraceManager.Stop());
+            //lifetime.ApplicationStopped.Register(() => TraceManager.Stop());
 
-            app.UseTracing("MicroRabbit.Banking.Api");
+            //app.UseTracing("MicroRabbit.Banking.Api");
 
 
             app.UseMvc();
